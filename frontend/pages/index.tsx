@@ -2,7 +2,7 @@ import { useState } from 'react';
 import Head from 'next/head';
 import UploadForm from '@/components/UploadForm';
 import ResultDisplay from '@/components/ResultDisplay';
-import { Layout } from '@/components/Layout';
+import Layout from '@/components/Layout';  // 修正: 名前付きインポートからデフォルトインポートに変更
 
 export default function Home() {
   const [recordId, setRecordId] = useState<string | null>(null);
