@@ -9,6 +9,8 @@ import json
 import base64
 import asyncio
 import logging
+import random
+import time
 from datetime import datetime
 from dotenv import load_dotenv
 from supabase import create_client, Client
@@ -39,6 +41,9 @@ app.add_middleware(
 supabase_url = os.environ.get("SUPABASE_URL")
 supabase_key = os.environ.get("SUPABASE_KEY")
 
+print(f"SUPABASE_URL: {supabase_url}")
+print(f"SUPABASE_KEY: {supabase_key[:10]}..." if supabase_key else "SUPABASE_KEY not set")
+
 # Gemini API設定
 gemini_api_key = os.environ.get("GEMINI_API_KEY")
 genai.configure(api_key=gemini_api_key)
@@ -47,7 +52,11 @@ genai.configure(api_key=gemini_api_key)
 def get_supabase() -> Client:
     if not supabase_url or not supabase_key:
         raise HTTPException(status_code=500, detail="Supabase credentials not configured")
-    return create_client(supabase_url, supabase_key)
+    try:
+        return create_client(supabase_url, supabase_key)
+    except Exception as e:
+        logger.error(f"Supabase client creation error: {str(e)}")
+        raise HTTPException(status_code=500, detail="Could not connect to database")
 
 @app.get("/api/health")
 async def health_check():
@@ -104,54 +113,129 @@ async def upload_file(file: UploadFile = File(...), supabase: Client = Depends(g
             raise e
         raise HTTPException(status_code=500, detail=str(e))
 
-async def process_image(record_id: str, image_url: str, image_bytes: bytes):
-    """画像処理と文字抽出を行う非同期関数"""
-    try:
-        # Supabaseに再接続（非同期タスク内）
-        supabase = create_client(supabase_url, supabase_key)
-        
-        # Base64エンコード
-        encoded_image = base64.b64encode(image_bytes).decode('utf-8')
-        
-        # Gemini モデルを設定
-        model = genai.GenerativeModel('gemini-pro-vision')
-        
-        # 画像をmimeタイプとBase64で準備
-        image_parts = [{
-            "mime_type": "image/jpeg",
-            "data": encoded_image
-        }]
-        
-        # Gemini APIリクエスト送信
-        prompt = "この医療カルテから画像と文字情報を抽出してください。できるだけ構造化されたデータとして抽出し、患者名、診断情報、処方薬、医師のコメントなどの重要情報を特定してください。結果はJSON形式で返してください。"
-        
-        response = model.generate_content([prompt, image_parts[0]])
-        
-        # テキスト抽出結果の取得
-        extracted_text = response.text
-        
-        # DBに抽出データを保存
-        supabase.table("extracted_data").insert({
-            "record_id": record_id,
-            "extracted_text": extracted_text,
-        }).execute()
-        
-        # 医療カルテの状態を更新
-        supabase.table("medical_records").update({
-            "processing_status": "completed"
-        }).eq("id", record_id).execute()
-        
-        logger.info(f"Processed record {record_id} successfully")
+async def process_image(record_id: str, image_url: str, image_bytes: bytes, language="ja", max_retries=5, initial_delay=2):
+    """画像処理と文字抽出を行う非同期関数（リトライ機能付き）"""
+    retries = 0
     
+    # Supabaseに再接続（非同期タスク内）
+    supabase = create_client(supabase_url, supabase_key)
+    
+    # 医療カルテの状態を処理中に更新
+    try:
+        supabase.table("medical_records").update({
+            "processing_status": "processing"
+        }).eq("id", record_id).execute()
     except Exception as e:
-        logger.error(f"Error processing image: {str(e)}")
-        # エラー時の処理
+        logger.error(f"処理状態の更新に失敗しました: {str(e)}")
+    
+    while retries <= max_retries:
         try:
+            # プロンプトの設定
+            if language == "ja":
+                prompt = """
+                この医療カルテ画像から、実際に書かれているテキストのみを抽出してください。
+
+                重要な指示：
+                - 画像に実際に存在するテキストだけを抽出する
+                - 存在しない情報は決して補完や推測しない
+                - 書かれていない項目や見出しは追加しない
+                - 形式やフォーマットを勝手に追加しない
+                - 余分な説明は一切不要
+
+                具体的な抽出方法：
+                1. 画像に見えるテキストをそのまま読み取る
+                2. 表形式のデータはスペースや記号で区切って表現
+                3. 改行や段落は原文のまま保持
+                4. 判読不能な部分は「[判読不能]」と表記
+                5. レイアウトをなるべく維持
+
+                例えば、画像に「体温 36.5℃」としか書かれていなければ、余分な見出しや区分けせず「体温 36.5℃」とだけ出力してください。
+                """
+            else:
+                prompt = """
+                Extract ONLY the text that is actually written in this medical record image.
+
+                Important instructions:
+                - Extract ONLY text that actually exists in the image
+                - DO NOT add information that is not present
+                - DO NOT add headings or sections that aren't in the image
+                - DO NOT add formatting or structure that isn't present
+                - NO additional explanations needed
+
+                Specific extraction method:
+                1. Read the text exactly as it appears
+                2. Represent table data with spaces or symbols as appropriate
+                3. Maintain original line breaks and paragraphs
+                4. Mark illegible text as "[ILLEGIBLE]"
+                5. Preserve layout as much as possible
+
+                For example, if the image only shows "Temperature 98.6°F", just output "Temperature 98.6°F" without any additional headings or sections.
+                """
+            
+            # Gemini モデルを設定
+            model = genai.GenerativeModel('gemini-1.5-pro')
+            
+            # 画像をmimeタイプとBase64で準備
+            image_part = {
+                "mime_type": "image/jpeg",
+                "data": base64.b64encode(image_bytes).decode('utf-8')
+            }
+            
+            # 生成設定 - OCRに最適化
+            generation_config = {
+                "max_output_tokens": 8192,
+                "temperature": 0.1,  # 低い温度で創造性を抑え、正確な抽出のみを促進
+                "top_p": 0.95,
+            }
+            
+            # モデルにコンテンツを送信（画像とプロンプト）
+            response = model.generate_content([prompt, image_part], generation_config=generation_config)
+            
+            # テキスト抽出結果の取得
+            extracted_text = response.text
+            
+            # DBに抽出データを保存
+            supabase.table("extracted_data").insert({
+                "record_id": record_id,
+                "extracted_text": extracted_text,
+            }).execute()
+            
+            # 医療カルテの状態を更新
             supabase.table("medical_records").update({
-                "processing_status": "error"
+                "processing_status": "completed"
             }).eq("id", record_id).execute()
-        except Exception as update_error:
-            logger.error(f"Failed to update record status: {str(update_error)}")
+            
+            logger.info(f"Processed record {record_id} successfully")
+            return
+            
+        except Exception as e:
+            retries += 1
+            error_message = str(e)
+            
+            if retries > max_retries:
+                logger.error(f"最大リトライ回数({max_retries})に達しました。処理を中止します。エラー: {error_message}")
+                # エラー状態に更新
+                try:
+                    supabase.table("medical_records").update({
+                        "processing_status": "failed"
+                    }).eq("id", record_id).execute()
+                except Exception as update_error:
+                    logger.error(f"エラー状態への更新に失敗しました: {str(update_error)}")
+                return
+            
+            # エラーメッセージを出力
+            logger.warning(f"画像処理中にエラー発生: {error_message}。{retries}/{max_retries}回目のリトライ")
+            
+            # エクスポネンシャルバックオフ（ジッター付き）
+            delay = initial_delay * (2 ** (retries - 1)) * (0.5 + random.random())
+            logger.info(f"{delay:.2f}秒後にリトライします。")
+            await asyncio.sleep(delay)  # asyncioを使用して非同期に待機
+            
+            # APIキーに関連するエラーの場合は長めに待機
+            if any(keyword in error_message.lower() for keyword in ["key", "quota", "permission", "limit", "api"]):
+                extra_delay = 60  # 1分追加で待機
+                logger.warning(f"APIキー関連のエラーが疑われます。追加で{extra_delay}秒待機します。")
+                await asyncio.sleep(extra_delay)  # asyncioを使用して非同期に待機
 
 @app.get("/api/records/{record_id}")
 async def get_record(record_id: str, supabase: Client = Depends(get_supabase)):
@@ -168,7 +252,7 @@ async def get_record(record_id: str, supabase: Client = Depends(get_supabase)):
         
         return {
             "record": record.data[0],
-            "extracted_data": extracted.data[0] if extracted.data else None
+            "extracted_data": extracted.data
         }
     
     except Exception as e:
