@@ -18,15 +18,19 @@ type RecordData = {
     original_image_url: string;
     processing_status: string;
   };
-  extracted_data: ExtractedData | null;
+  extracted_data: ExtractedData[];
 };
 
 export default function ResultDisplay({ recordId }: ResultDisplayProps) {
   const [data, setData] = useState<RecordData | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
+  const [pollingCount, setPollingCount] = useState<number>(0);
 
   useEffect(() => {
+    let isMounted = true;
+    const maxPollingAttempts = 20; // 最大ポーリング試行回数
+    
     const fetchData = async () => {
       try {
         const response = await fetch(`/api/records/${recordId}`);
@@ -36,20 +40,62 @@ export default function ResultDisplay({ recordId }: ResultDisplayProps) {
         }
         
         const resultData = await response.json();
-        setData(resultData);
+        
+        if (isMounted) {
+          setData(resultData);
+          
+          // 処理ステータスに基づいてポーリングを管理
+          if (resultData.record.processing_status === 'completed' || 
+              resultData.record.processing_status === 'failed' ||
+              pollingCount >= maxPollingAttempts) {
+            // 処理完了またはエラー時、またはポーリング上限に達した場合はポーリングを停止
+            setLoading(false);
+            return true; // ポーリング停止を示す
+          }
+          
+          // ポーリングが継続中でもUIのローディング状態は更新
+          if (resultData.record.processing_status === 'processing') {
+            setLoading(true);
+          }
+        }
+        return false; // ポーリング継続を示す
       } catch (err) {
         console.error('Error fetching result:', err);
-        setError('結果の取得中にエラーが発生しました');
-      } finally {
-        setLoading(false);
+        if (isMounted) {
+          setError('結果の取得中にエラーが発生しました');
+          setLoading(false);
+        }
+        return true; // エラー時はポーリングを停止
       }
     };
 
-    const interval = setInterval(fetchData, 3000); // 3秒ごとに状態を確認
-    fetchData(); // 初回実行
+    // 初回データ取得
+    fetchData();
+    
+    // 動的なポーリング間隔を設定
+    const getPollingInterval = (count: number) => {
+      // 最初は短い間隔で、その後徐々に長くする
+      if (count < 5) return 3000; // 最初の5回は3秒
+      if (count < 10) return 5000; // 次の5回は5秒
+      return 10000; // それ以降は10秒
+    };
+    
+    // ポーリングを実行
+    const intervalId = setInterval(async () => {
+      const shouldStop = await fetchData();
+      
+      if (shouldStop) {
+        clearInterval(intervalId);
+      } else {
+        setPollingCount(prev => prev + 1);
+      }
+    }, getPollingInterval(pollingCount));
 
-    return () => clearInterval(interval);
-  }, [recordId]);
+    return () => {
+      isMounted = false;
+      clearInterval(intervalId);
+    };
+  }, [recordId, pollingCount]);
 
   // 文字列をJSONとしてパースして表示する試み
   const renderExtractedText = (text: string) => {
@@ -71,11 +117,41 @@ export default function ResultDisplay({ recordId }: ResultDisplayProps) {
     }
   };
 
-  if (loading) {
+  // エラーの詳細表示
+  const showErrorDetails = () => {
+    if (!data) return null;
+    
+    // エラーステータスの場合の詳細情報
+    if (data.record.processing_status === 'failed') {
+      return (
+        <div className="mt-2">
+          <button 
+            onClick={() => alert('管理者に問い合わせてください')}
+            className="text-xs text-blue-600 hover:text-blue-800 underline"
+          >
+            詳細を表示
+          </button>
+        </div>
+      );
+    }
+    return null;
+  };
+
+  // ローディング表示の改良
+  if (loading && (!data || data.record.processing_status === 'pending' || data.record.processing_status === 'processing')) {
     return (
       <div className="text-center py-8">
         <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-blue-500 mx-auto"></div>
-        <p className="mt-4 text-gray-600">処理中です。しばらくお待ちください...</p>
+        <p className="mt-4 text-gray-600">
+          {data?.record.processing_status === 'processing' 
+            ? "テキスト抽出中です。しばらくお待ちください..." 
+            : "処理の準備中です..."}
+        </p>
+        <p className="mt-2 text-xs text-gray-500">
+          {pollingCount > 10 
+            ? "処理に時間がかかっています。大きな画像や複雑なカルテの場合は数分かかることがあります。" 
+            : ""}
+        </p>
       </div>
     );
   }
@@ -84,6 +160,12 @@ export default function ResultDisplay({ recordId }: ResultDisplayProps) {
     return (
       <div className="bg-red-100 border-l-4 border-red-500 text-red-700 p-4">
         <p>{error || 'データを取得できませんでした'}</p>
+        <button 
+          onClick={() => window.location.reload()}
+          className="mt-2 text-sm underline"
+        >
+          再試行する
+        </button>
       </div>
     );
   }
@@ -122,7 +204,7 @@ export default function ResultDisplay({ recordId }: ResultDisplayProps) {
                 </div>
               </div>
             </div>
-          ) : data.record.processing_status === 'error' ? (
+          ) : data.record.processing_status === 'failed' ? (
             <div className="bg-red-50 border-l-4 border-red-400 p-4">
               <div className="flex">
                 <div className="flex-shrink-0">
@@ -132,11 +214,12 @@ export default function ResultDisplay({ recordId }: ResultDisplayProps) {
                 </div>
                 <div className="ml-3">
                   <p className="text-sm text-red-700">エラーが発生しました。もう一度試してください。</p>
+                  {showErrorDetails()}
                 </div>
               </div>
             </div>
-          ) : data.extracted_data ? (
-            renderExtractedText(data.extracted_data.extracted_text)
+          ) : data.extracted_data && data.extracted_data.length > 0 ? (
+            renderExtractedText(data.extracted_data[0].extracted_text)
           ) : (
             <div className="bg-gray-50 p-4 rounded-lg">
               <p className="text-gray-500">抽出結果がありません。</p>
@@ -144,6 +227,12 @@ export default function ResultDisplay({ recordId }: ResultDisplayProps) {
           )}
           
           <div className="mt-4 text-right">
+            <button
+              onClick={() => window.location.reload()}
+              className="mr-4 text-gray-600 hover:text-gray-800"
+            >
+              更新
+            </button>
             <Link href={`/record/${recordId}`} className="text-blue-600 hover:text-blue-800">
               詳細を表示 →
             </Link>
