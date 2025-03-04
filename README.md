@@ -23,8 +23,20 @@
 /
 ├── frontend/          # Next.jsフロントエンド
 ├── backend/           # FastAPIバックエンド
+├── supabase/          # Supabaseのマイグレーションスクリプト
+│   └── migrations/    # データベースのマイグレーションファイル
 └── docs/              # プロジェクトドキュメント
+    └── database.md    # データベース構造の詳細な解説
 ```
+
+## データベース構造
+
+このプロジェクトはSupabase（PostgreSQL）を使用してデータを管理しています。データベースには以下のテーブルが含まれています：
+
+- **medical_records**: 医療カルテの画像情報と処理状態を管理
+- **extracted_data**: AIによって抽出されたテキストデータを管理
+
+詳細なデータベースの構造と設定方法については[データベースドキュメント](docs/database.md)を参照してください。
 
 ## セットアップ方法
 
@@ -34,6 +46,12 @@
 - Python 3.8以上
 - Supabaseアカウント
 - Google AI Studio API キー
+
+### Supabaseのセットアップ
+
+1. [Supabase](https://supabase.com/)でアカウントを作成し、新しいプロジェクトを作成
+2. データベーススキーマの設定（詳細は[データベースドキュメント](docs/database.md)を参照）
+3. プロジェクトのURLと匿名キーをメモ
 
 ### 環境変数
 
