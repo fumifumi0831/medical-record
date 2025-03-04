@@ -82,14 +82,16 @@ async def upload_file(file: UploadFile = File(...), supabase: Client = Depends(g
         
         # Supabaseのストレージにアップロード
         storage_path = f"medical_records/{file_name}"
-        upload_result = supabase.storage.from("images").upload(
+        
+        # from_メソッドを使用（fromはPythonの予約語なのでfrom_を使用）
+        upload_result = supabase.storage.from_("images").upload(
             path=storage_path,
             file=contents,
             file_options={"content-type": file.content_type}
         )
         
         # 画像のURLを取得
-        file_url = supabase.storage.from("images").get_public_url(storage_path)
+        file_url = supabase.storage.from_("images").get_public_url(storage_path)
         
         # DBに新しいレコードを作成
         record = supabase.table("medical_records").insert({
