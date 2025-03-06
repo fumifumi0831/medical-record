@@ -85,16 +85,21 @@ async def upload_file(file: UploadFile = File(...), supabase: Client = Depends(g
         
         # Supabaseのストレージにアップロード
         storage_path = f"medical_records/{file_name}"
-        
+
         # from_メソッドを使用（fromはPythonの予約語なのでfrom_を使用）
-        upload_result = supabase.storage.from_("images").upload(
+        bucket_name = "images"
+
+        # ファイルの内容を使用してアップロード
+        upload_result = supabase.storage.from_(bucket_name).upload(
             path=storage_path,
             file=contents,
             file_options={"content-type": file.content_type}
         )
         
         # 画像のURLを取得
-        file_url = supabase.storage.from_("images").get_public_url(storage_path)
+        bucket_name = "images"
+        file_url = supabase.storage.from_(bucket_name).get_public_url(storage_path)
+        logger.info(f"File URL: {file_url}")
         
         # DBに新しいレコードを作成
         record = supabase.table("medical_records").insert({
@@ -305,6 +310,7 @@ async def reprocess_record(record_id: str, supabase: Client = Depends(get_supaba
         async with httpx.AsyncClient() as client:
             response = await client.get(image_url)
             if response.status_code != 200:
+                logger.error(f"Failed to download image: {image_url}, status code: {response.status_code}")
                 raise HTTPException(status_code=500, detail="Failed to download image")
             image_bytes = response.content
         
@@ -322,3 +328,4 @@ async def reprocess_record(record_id: str, supabase: Client = Depends(get_supaba
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+

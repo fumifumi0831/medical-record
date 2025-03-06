@@ -179,9 +179,11 @@ export default function ResultDisplay({ recordId }: ResultDisplayProps) {
         <div className="md:w-1/3">
           <h3 className="text-lg font-medium mb-2">元画像</h3>
           <div className="border rounded-md overflow-hidden">
-            <img 
-              src={data.record.original_image_url} 
-              alt="カルテ画像" 
+            <img
+              src={data?.record?.original_image_url}
+              onError={(e) => console.error("Image failed to load:", data?.record?.original_image_url, e)}
+              onLoad={() => console.log("Image loaded successfully:", data?.record?.original_image_url)}
+              alt="カルテ画像"
               className="w-full object-contain"
             />
           </div>

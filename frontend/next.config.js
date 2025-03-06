@@ -12,6 +12,9 @@ const nextConfig = {
       },
     ];
   },
+  images: {
+    domains: ['rwtnxdkuzhglmbnwoxvs.supabase.co'],
+  },
 };
 
 module.exports = nextConfig;
